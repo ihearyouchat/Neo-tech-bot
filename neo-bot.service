@@ -1,0 +1,15 @@
+[Unit]
+Description=Neo Tech-Help Telegram Bot
+After=network.target
+
+[Service]
+# Update this path to wherever you cloned the repo on your server
+WorkingDirectory=/root/neo-tech-bot
+ExecStart=/root/neo-tech-bot/venv/bin/python bot.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
