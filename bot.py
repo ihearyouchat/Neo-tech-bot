@@ -670,9 +670,11 @@ def maybe_extract_solution(user_id: str, latest_user_message: str) -> None:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Hey, I'm Neo 👋 Your go-to for tech headaches — locked accounts, "
-        "confusing settings, app problems, \"what tool should I use for X\", "
-        "you name it.\n\nWhat's going on? You can type or send a voice message."
+        "Hey, I'm Neo. The one to ask for if you need help. I resolve "
+        "technical problems on all devices — Androids, laptops, desktops, "
+        "tablets. Locked accounts, confusing settings, password resets, "
+        "cyber security, app problems, online tools you can use, and more. "
+        "Try me out."
     )
 
 
