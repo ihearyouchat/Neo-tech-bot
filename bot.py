@@ -28,6 +28,7 @@ import os
 import json
 import logging
 import sqlite3
+import tempfile
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -41,6 +42,7 @@ from telegram.ext import (
     filters,
 )
 from anthropic import Anthropic
+import assemblyai as aai
 
 # ---------------------------------------------------------------------------
 # Config
@@ -51,6 +53,8 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
+ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
+ASSEMBLYAI_LANGUAGE_CODE = os.getenv("ASSEMBLYAI_LANGUAGE_CODE", "en")
 
 DB_PATH = "conversations.db"
 MAX_HISTORY_MESSAGES = 20       # per-user chat history sent as context
@@ -61,7 +65,13 @@ if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in .env")
 if not ANTHROPIC_API_KEY:
     raise RuntimeError("Missing ANTHROPIC_API_KEY in .env")
+if not ASSEMBLYAI_API_KEY:
+    raise RuntimeError(
+        "Missing ASSEMBLYAI_API_KEY in .env — needed for voice message support. "
+        "Get one at assemblyai.com (key is shown on your dashboard right after signup)."
+    )
 
+aai.settings.api_key = ASSEMBLYAI_API_KEY
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 logging.basicConfig(
@@ -662,14 +672,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Hey, I'm Neo 👋 Your go-to for tech headaches — locked accounts, "
         "confusing settings, app problems, \"what tool should I use for X\", "
-        "you name it.\n\nWhat's going on?"
+        "you name it.\n\nWhat's going on? You can type or send a voice message."
     )
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.effective_user.id)
-    user_text = update.message.text
-
+async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: str, user_text: str) -> None:
+    """Shared pipeline for both typed and transcribed-voice messages."""
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     reply_text, offer_resolution = get_claude_reply(user_id, user_text)
@@ -679,6 +687,66 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # already tied to (and credited to) an existing stored solution.
     if offer_resolution != "confirmed":
         maybe_extract_solution(user_id, user_text)
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    user_text = update.message.text
+    await process_user_text(update, context, user_id, user_text)
+
+
+def transcribe_voice(ogg_path: str) -> str:
+    """
+    Sends a Telegram voice note (Ogg/Opus) straight to AssemblyAI and returns
+    the transcript text. AssemblyAI accepts .ogg/Opus directly — no ffmpeg
+    conversion step needed (unlike the OpenAI path this replaced).
+    """
+    config = aai.TranscriptionConfig(language_code=ASSEMBLYAI_LANGUAGE_CODE)
+    transcript = aai.Transcriber().transcribe(ogg_path, config=config)
+
+    if transcript.status == aai.TranscriptStatus.error:
+        raise RuntimeError(f"AssemblyAI transcription failed: {transcript.error}")
+
+    return (transcript.text or "").strip()
+
+
+async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+    voice = update.message.voice
+    tg_file = await context.bot.get_file(voice.file_id)
+
+    with tempfile.NamedTemporaryFile(suffix=".oga", delete=False) as tmp:
+        ogg_path = tmp.name
+
+    try:
+        await tg_file.download_to_drive(ogg_path)
+        transcript = transcribe_voice(ogg_path)
+    except Exception:
+        logger.exception("Voice transcription failed for user %s", user_id)
+        await update.message.reply_text(
+            "Sorry, I couldn't quite catch that voice message — mind trying "
+            "again, or typing it out instead?"
+        )
+        return
+    finally:
+        try:
+            os.remove(ogg_path)
+        except OSError:
+            pass
+
+    if not transcript:
+        await update.message.reply_text(
+            "Hmm, I didn't catch any words in that one — could you try again?"
+        )
+        return
+
+    # Show the user what Neo heard, since transcription isn't perfect —
+    # this lets them catch and correct a mishearing before Neo answers it.
+    await update.message.reply_text(f"I heard: \u201c{transcript}\u201d")
+
+    await process_user_text(update, context, user_id, transcript)
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +760,7 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
 
     logger.info("Bot starting (polling mode)...")
     app.run_polling()

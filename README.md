@@ -22,10 +22,15 @@ This version includes:
 - **A frustration breaker** — if a user hits several failed fixes in a row on
   the same problem, Neo acknowledges it and offers a short dad joke before
   continuing, rather than just grinding on
+- **Voice messages** — users can send a Telegram voice note instead of typing.
+  It's transcribed directly via AssemblyAI (no conversion step needed), Neo
+  shows the user what he heard (so they can catch a mishearing), then
+  answers exactly as he would a typed message
 - One main Claude API call per message, plus:
   - an occasional "extraction" call when a brand-new fix gets confirmed
   - a rare "corrective rewrite" call, only triggered if a reply is flagged
     as listing multiple options
+  - one AssemblyAI transcription call per voice message received
 
 ## 1. Get a Telegram bot token
 
@@ -125,6 +130,8 @@ Telegram, find your bot by its username, and send `/start`.
 
 
 
+### On the one-fix-at-a-time enforcement specifically
+
 - This is genuinely two layers now, not just an instruction: (1) an explicit
   system-prompt rule with a clear example of what's allowed (numbered steps
   for one fix) vs. forbidden (multiple alternative fixes), and (2) an
@@ -142,6 +149,42 @@ Telegram, find your bot by its username, and send `/start`.
   only the general technical problem and fix, never names or personal
   details. Worth spot-checking the `solutions` table occasionally to confirm
   this holds up in practice.
+
+### On voice messages specifically
+
+- Telegram voice notes arrive as Ogg/Opus audio. **AssemblyAI accepts this
+  format directly** — their own docs confirm no pre-conversion is needed, so
+  the downloaded voice file is sent straight to their API as-is. (No
+  `ffmpeg` dependency needed for this, unlike the OpenAI version this
+  replaced.)
+- The flow: download the voice file from Telegram → send to AssemblyAI →
+  get transcript back → show the user what was heard → run it through the
+  exact same pipeline as a typed message (knowledge-base search, one-fix
+  rule, frustration tracking, everything — voice messages aren't a separate
+  code path once transcribed).
+- **Showing "I heard: ..."** before answering is deliberate, not just a nice
+  touch: transcription is never 100% accurate, and this gives the user a
+  chance to notice a mishearing and correct it (e.g. by typing instead) —
+  especially relevant given the audience.
+- **Get an AssemblyAI API key**: sign up at assemblyai.com, verify your
+  email — the key is shown immediately on your dashboard, no separate
+  "create key" step. Comes with ~$50 in free credit, no card required. Add
+  it to `.env` as `ASSEMBLYAI_API_KEY`.
+- **This adds a new required setting**: the bot will now refuse to start if
+  `ASSEMBLYAI_API_KEY` is missing from `.env`, the same way it already does
+  for the Telegram and Anthropic keys.
+- **Provider history, for context**: this feature went through two prior
+  providers before landing here. Speechmatics looked like the best fit on
+  accuracy (see earlier research), but their account portal had an
+  unresponsive "Create API key" button that couldn't be resolved through
+  normal troubleshooting — looked like a bug on their end. OpenAI worked as
+  a fallback, but was ruled out for reasons unrelated to the technology
+  itself. AssemblyAI ended up simpler than both: no separate key-creation
+  step, and no `ffmpeg` conversion needed either. Swapping providers again
+  in the future, if ever needed, is a contained change isolated to
+  `transcribe_voice()` and this config block, not a rearchitecture — that
+  was true for each of these swaps and remains true going forward.
+
 
 ## What's intentionally NOT in this MVP (by design, see conversation history)
 
